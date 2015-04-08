@@ -47,7 +47,7 @@
     })
     .controller('ramlEditorMain', function (UPDATE_RESPONSIVENESS_INTERVAL, $scope, $rootScope, $timeout, $window,
       safeApply, safeApplyWrapper, debounce, throttle, ramlHint, ramlParser, ramlParserFileReader, ramlRepository, codeMirror,
-      codeMirrorErrors, config, $prompt, $confirm, $modal
+      codeMirrorErrors, config, $prompt, $confirm, $modal, newFileService
     ) {
       var editor, lineOfCurrentError, currentFile;
 
@@ -94,23 +94,75 @@
         safeApply($scope);
       };
 
+      $scope.files = [];
+
+      $scope.pirula = function () {
+        return $scope.files.length === 1;
+      };
+
+      $scope.isTabActive = function isTabActive(file) {
+        return $scope.fileBrowser.selectedFile.name === file.name;
+      };
+
+      $scope.showTabContent = function showTabContent(file) {
+        codeMirror.swapDoc(file.name, file.contents, file.extension);
+
+        $rootScope.$broadcast('event:raml-parsed', {});
+        $scope.fileParsable = $scope.getIsFileParsable(file);
+        $scope.fileBrowser.selectFile(file);
+        $rootScope.$broadcast('event:file-updated');
+      };
+
+      $scope.closeTab = function closeTab(index) {
+        if ($scope.files.length > 1) {
+          var currentFile = $scope.files.splice(index, 1)[0];
+
+          if ($scope.files.length > 0 && $scope.isTabActive(currentFile)) {
+            var file = $scope.files[0];
+            codeMirror.swapDoc(file.name, file.contents, file.extension);
+
+            $scope.fileParsable = $scope.getIsFileParsable(file);
+            $scope.fileBrowser.selectFile(file);
+            $rootScope.$broadcast('event:file-updated');
+          }
+        }
+      };
+
       $scope.$on('event:raml-editor-file-selected', function onFileSelected(event, file) {
         codeMirror.configureEditor(editor, file.extension);
 
         currentFile = file;
 
+        codeMirror.swapDoc(file.name, file.contents, file.extension);
+
+        var fileAlreadyExists = $scope.files.filter(function (fs) {
+          return file.name === fs.name;
+        }).length === 0;
+
+        if (fileAlreadyExists) {
+          $scope.files.push(file);
+        }
+
         // Empty console so that we remove content from previous open RAML file
         $rootScope.$broadcast('event:raml-parsed', {});
-
-        editor.setValue(file.contents);
         $scope.fileParsable = $scope.getIsFileParsable(file);
+        $scope.fileBrowser.selectFile(file);
+        $rootScope.$broadcast('event:file-updated');
       });
 
-      $scope.$watch('fileBrowser.selectedFile.contents', function (contents) {
-        if (contents && contents !== editor.getValue()) {
-          editor.setValue(contents);
-        }
+      $scope.$on('event:save-all', function () {
+        console.log('fileBrowser.saveFile');
+
+        Object.keys($scope.files).map(function (key) {
+          $scope.fileBrowser.saveFile($scope.files[key]);
+        });
       });
+
+      // $scope.$watch('fileBrowser.selectedFile.contents', function (newContents, oldContents) {
+      //   if (newContents === oldContents) {
+      //     $scope.fileBrowser.contents.dirty = false;
+      //   }
+      // });
 
       var updateFile = debounce(function updateFile () {
         $rootScope.$broadcast('event:file-updated');
@@ -184,6 +236,26 @@
             $rootScope.$broadcast('event:raml-parser-error', error);
           })
         );
+      });
+
+      $rootScope.$on('event:extract', function ($event, editor) {
+        var message  = 'Creates a new file containing the selected content.';
+        var contents = editor.getSelection();
+        var key      = contents.split(':');
+        var filename;
+
+        if (key.length > 1) {
+          key      = key[0];
+          filename = (key + '.raml').replace(/\s/g, '');
+          contents = contents.replace(key + ':', '');
+
+          return newFileService.prompt($scope.homeDirectory, 'Extract to', message, contents, filename, true)
+          .then(function (result) {
+            if (filename) {
+              editor.replaceSelection(key + ': !include ' + result.path);
+            }
+          });
+        }
       });
 
       $scope.$on('event:raml-parsed', safeApplyWrapper($scope, function onRamlParser(event, raml) {

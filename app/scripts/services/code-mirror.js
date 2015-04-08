@@ -80,7 +80,8 @@
         'Cmd-S': 'save',
         'Ctrl-S': 'save',
         'Shift-Tab': 'indentLess',
-        'Shift-Ctrl-T': 'toggleTheme'
+        'Shift-Ctrl-T': 'toggleTheme',
+        'Shift-Cmd-S': 'saveAll'
       };
 
       var ramlKeys = {
@@ -88,12 +89,23 @@
         'Cmd-S': 'save',
         'Ctrl-S': 'save',
         'Shift-Tab': 'indentLess',
-        'Shift-Ctrl-T': 'toggleTheme'
+        'Shift-Ctrl-T': 'toggleTheme',
+        'Shift-Cmd-S': 'saveAll',
+        'Cmd-E': 'extract'
       };
 
       var autocomplete = function onChange(cm) {
         if (cm.getLine(cm.getCursor().line).trim()) {
           cm.execCommand('autocomplete');
+        }
+      };
+
+      var buffer = {};
+
+      service.swapDoc = function(key, text, extension) {
+        if (key) {
+          buffer[key] = CodeMirror.Doc(text, MODES[extension]);
+          service.getEditor().swapDoc(buffer[key]);
         }
       };
 
@@ -235,6 +247,10 @@
           $rootScope.$broadcast('event:save');
         };
 
+        CodeMirror.commands.saveAll = function () {
+          $rootScope.$broadcast('event:save-all');
+        };
+
         CodeMirror.commands.autocomplete = function (cm) {
           CodeMirror.showHint(cm, CodeMirror.hint.raml, {
             ghosting: true
@@ -243,6 +259,11 @@
 
         CodeMirror.commands.toggleTheme = function () {
           $rootScope.$broadcast('event:toggle-theme');
+        };
+
+        CodeMirror.commands.extract = function () {
+          console.log('extracting!');
+          $rootScope.$broadcast('event:extract', service.getEditor());
         };
 
         CodeMirror.defineMode('raml', codeMirrorHighLight.highlight);
