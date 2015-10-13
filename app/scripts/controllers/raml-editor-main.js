@@ -3,7 +3,13 @@
 
   angular.module('ramlEditorApp')
     .constant('UPDATE_RESPONSIVENESS_INTERVAL', 800)
-    .service('ramlParserFileReader', function ($http, $q, ramlParser, ramlRepository, safeApplyWrapper) {
+    .service('ramlParserFileReader', function (
+      $http,
+      $q,
+      ramlParser,
+      ramlRepository,
+      safeApplyWrapper
+    ) {
       function loadFile (path) {
         return ramlRepository.loadFile({path: path}).then(
           function success(file) {
@@ -47,8 +53,47 @@
     })
     .controller('ramlEditorMain', function (UPDATE_RESPONSIVENESS_INTERVAL, $scope, $rootScope, $timeout, $window,
       safeApply, safeApplyWrapper, debounce, throttle, ramlHint, ramlParser, ramlParserFileReader, ramlRepository, codeMirror,
-      codeMirrorErrors, config, $prompt, $confirm, $modal
+      codeMirrorErrors, config, $prompt, $confirm, $modal, eventEmitter, ramlEditorContext, newFileService, $firebaseObject, hotkeys
     ) {
+      /// Firebase
+      if ($window.RAML.Settings.firebase) {
+        $scope.cliendId = Math.round(Math.random() * 100000000);
+        var url = 'https://vivid-heat-7827.firebaseio.com/';
+        var fireRef = new Firebase(url);
+
+        var syncObject = $firebaseObject(fireRef.child('contents'));
+
+        syncObject.$bindTo($scope, 'data');
+
+        $scope.$watch('data', function () {
+          if ($scope.fileBrowser && $scope.fileBrowser.selectedFile) {
+            var file = $scope.fileBrowser.selectedFile;
+            var filename = file.name.split('.')[0][0];
+
+            if ($scope.data && $scope.data.contents && $scope.data.contents[filename] != null && $scope.data.contents[filename] !== editor.getValue() && $scope.cliendId !== $scope.data.id) {
+              editor.setValue($scope.data.contents[filename]);
+            }
+          }
+        });
+      }
+      ///
+
+      $scope.rightBarCollapsed = true;
+
+      $scope.toggleRightBar = function toggleRightBar() {
+        $scope.rightBarCollapsed = !$scope.rightBarCollapsed;
+      };
+
+      $scope.activeMode = 'source';
+
+      $scope.setMode = function setMode(mode) {
+        $scope.activeMode = mode;
+      };
+
+      $scope.isActive = function isActive(mode) {
+        return $scope.activeMode === mode;
+      };
+
       var editor, lineOfCurrentError, currentFile;
 
       function extractCurrentFileLabel(file) {
@@ -94,16 +139,32 @@
         safeApply($scope);
       };
 
-      $scope.$on('event:raml-editor-file-selected', function onFileSelected(event, file) {
+      eventEmitter.subscribe('event:raml-editor-file-selected', function onFileSelected(file) {
         currentFile = file;
 
         // Empty console so that we remove content from previous open RAML file
-        $rootScope.$broadcast('event:raml-parsed', {});
+        eventEmitter.publish('event:raml-parsed', {});
+
+        $scope.originalValue = file.contents;
+
+        var dataContent = file.contents;
+
+        if ($window.RAML.Settings.firebase) {
+          var filename  = file.name.replace('.')[0][0];
+          $scope.data = {};
+          $scope.data.contents = {id: $scope.cliendId};
+          $scope.data.contents[filename] = file.contents;
+          dataContent = $scope.data.contents[filename];
+        }
+
+        $scope.currentFile = file;
 
         // Every file must have a unique document for history and cursors.
         if (!file.doc) {
-          file.doc = new CodeMirror.Doc(file.contents);
+          file.doc = new CodeMirror.Doc(dataContent);
         }
+
+        ramlEditorContext.read(dataContent.split('\n'));
 
         editor.swapDoc(file.doc);
         editor.focus();
@@ -122,20 +183,27 @@
 
       $scope.$watch('fileBrowser.selectedFile.contents', function (contents) {
         if (contents != null && contents !== editor.getValue()) {
-          currentFile.doc = new CodeMirror.Doc(contents);
+          var filename  = $scope.fileBrowser.selectedFile.name.replace('.')[0][0];
+          var dataContent = contents;
+
+          if ($window.RAML.Settings.firebase) {
+            dataContent = $scope.data.contents[filename];
+          }
+
+          currentFile.doc = new CodeMirror.Doc(dataContent);
           editor.swapDoc(currentFile.doc);
         }
       });
 
       var updateFile = debounce(function updateFile () {
-        $rootScope.$broadcast('event:file-updated');
+        eventEmitter.publish('event:file-updated');
       }, config.get('updateResponsivenessInterval', UPDATE_RESPONSIVENESS_INTERVAL));
 
-      $scope.$on('event:raml-editor-file-created', updateFile);
+      eventEmitter.subscribe('event:raml-editor-file-created', updateFile);
 
-      $scope.$on('event:raml-editor-file-removed', updateFile);
+      eventEmitter.subscribe('event:raml-editor-file-removed', updateFile);
 
-      $scope.$on('event:raml-editor-file-removed', function onFileSelected(event, file) {
+      eventEmitter.subscribe('event:raml-editor-file-removed', function onFileSelected(file) {
         if (currentFile === file) {
           currentFile = undefined;
           editor.swapDoc(new CodeMirror.Doc(''));
@@ -152,9 +220,18 @@
         var source       = editor.getValue();
         var selectedFile = $scope.fileBrowser.selectedFile;
 
-        $scope.clearErrorMarks();
         selectedFile.contents = source;
+
+        if ($window.RAML.Settings.firebase) {
+          var filename  = selectedFile.name.replace('.')[0][0];
+          $scope.data.contents = { id: $scope.cliendId };
+          $scope.data.contents[filename] = source;
+        }
+
+        $scope.clearErrorMarks();
         $scope.fileParsable   = $scope.getIsFileParsable(selectedFile);
+
+        eventEmitter.publish('event:editor:include', {});
 
         updateFile();
       };
@@ -173,7 +250,7 @@
         $scope.hasErrors = false;
       };
 
-      $scope.$on('event:file-updated', function onFileUpdated() {
+      eventEmitter.subscribe('event:file-updated', function onFileUpdated() {
         $scope.clearErrorMarks();
 
         var file = $scope.fileBrowser.selectedFile;
@@ -191,24 +268,24 @@
             // it later and makes it unusable for mocking service
             $scope.fileBrowser.selectedFile.raml = angular.copy(value);
 
-            $rootScope.$broadcast('event:raml-parsed', value);
+            eventEmitter.publish('event:raml-parsed', value);
           }),
 
           // failure
           safeApplyWrapper($scope, function failure(error) {
-            $rootScope.$broadcast('event:raml-parser-error', error);
+            eventEmitter.publish('event:raml-parser-error', error);
           })
         );
       });
 
-      $scope.$on('event:raml-parsed', safeApplyWrapper($scope, function onRamlParser(event, raml) {
+      eventEmitter.subscribe('event:raml-parsed', safeApplyWrapper($scope, function onRamlParser(raml) {
         $scope.title     = raml.title;
         $scope.version   = raml.version;
         $scope.currentError = undefined;
         lineOfCurrentError = undefined;
       }));
 
-      $scope.$on('event:raml-parser-error', safeApplyWrapper($scope, function onRamlParserError(event, error) {
+      eventEmitter.subscribe('event:raml-parser-error', safeApplyWrapper($scope, function onRamlParserError(error) {
         /*jshint sub: true */
         var problemMark = error['problem_mark'],
             displayLine = 0,
@@ -229,6 +306,35 @@
           column:  displayColumn + 1,
           message: formatErrorMessage(message, lineOfCurrentError, displayLine)
         }]);
+      }));
+
+      eventEmitter.subscribe('event:editor:extract-to', safeApplyWrapper($scope, function extractTo(cm) {
+        var message  = 'Extract to';
+        var contents = cm.getSelection();
+        var key      = contents.split(':');
+        var filename, last;
+
+        if (key.length > 1) {
+          key      = key[0];
+          filename = (key + '.raml').replace(/\s/g, '');
+          contents = contents.replace(key + ':', '');
+          last     = cm.getCursor('to').line;
+
+          if (cm.getCursor('to').xRel === 0) {
+            last = cm.getCursor('to').line-1;
+          }
+
+          cm.setSelection(cm.getCursor('from'), {line: last, ch: cm.getLine(last).length});
+
+          return newFileService.prompt($scope.homeDirectory, 'Extract to', message, contents, filename, true)
+            .then(function (result) {
+              if (filename) {
+                cm.replaceSelection(key + ': !include ' + result.path);
+              }
+
+              eventEmitter.publish('event:notification:save-all', {notify: false});
+            });
+        }
       }));
 
       $scope.openHelp = function openHelp() {
@@ -274,11 +380,11 @@
       };
 
       $scope.getIsConsoleVisible = function getIsConsoleVisible() {
-        if (!$scope.fileParsable) {
-          return false;
+        if ($scope.tryIt && $scope.tryIt.enabled && $scope.tryIt.selectedMethod) {
+          return true;
         }
 
-        return true;
+        return false;
       };
 
       $scope.toggleShelf = function toggleShelf() {
@@ -290,9 +396,24 @@
         return extractCurrentFileLabel(currentFile);
       };
 
-      $scope.$on('event:toggle-theme', function onToggleTheme() {
+      eventEmitter.subscribe('event:toggle-theme', function onToggleTheme() {
         $window.setTheme(($scope.theme === 'dark') ? 'light' : 'dark');
       });
+
+      $scope.mainClick = function mainClick($event) {
+        if ($event.target.parentElement.className.indexOf('omnisearch') === -1) {
+          $scope.omnisearch.close();
+        }
+      };
+
+      $scope.openOmnisearch = function openOmnisearch(e) {
+        e.preventDefault();
+        $scope.omnisearch.open();
+      };
+
+      $scope.toggleCheatSheet = function toggleCheatSheet() {
+        hotkeys.toggleCheatSheet();
+      };
 
       (function bootstrap() {
         $scope.currentError    = undefined;
@@ -320,9 +441,28 @@
           }]);
         });
 
-        editor.on('change', function onChange() {
-          $scope.sourceUpdated();
+        editor.on('change', function onChange(cm) {
+          safeApplyWrapper($scope, function () {
+            var file    = $scope.fileBrowser.selectedFile;
+            var orig    = $scope.originalValue;
+            var current = cm.getValue();
+
+            file.dirty = orig !== current;
+
+            $scope.workingFiles[file.name] = file;
+            $scope.sourceUpdated();
+          })();
         });
+
+        eventEmitter.subscribe('event:editor:new:file', safeApplyWrapper($scope, function (data) {
+          var file = data.file;
+          $scope.workingFiles[file.name] = file;
+        }));
+
+        eventEmitter.subscribe('event:editor:remove:file', safeApplyWrapper($scope, function (data) {
+          var file = data.file;
+          delete $scope.workingFiles[file.name];
+        }));
 
         $window.alreadyNotifiedExit = false;
 
